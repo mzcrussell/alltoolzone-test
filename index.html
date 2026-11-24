@@ -1013,6 +1013,70 @@ Describe your impact and achievements."></textarea></div><div class="field full"
       crop: { x: offsetX, y: offsetY, width: drawWidth, height: drawHeight }
     };
   }
+
+  // Remove tiny disconnected foreground islands (common grass/background
+  // fragments) while keeping the main subject and its connected fine edges.
+  // This is deliberately conservative: it never erodes the main silhouette.
+  function removeSmallMaskIslands(maskCanvas) {
+    const width = maskCanvas.width;
+    const height = maskCanvas.height;
+    const ctx = maskCanvas.getContext('2d', { willReadFrequently: true });
+    const imageData = ctx.getImageData(0, 0, width, height);
+    const alpha = imageData.data;
+    const total = width * height;
+    const seen = new Uint8Array(total);
+    const queue = new Uint32Array(total);
+    const components = [];
+    let largest = 0;
+    const threshold = 48; // Ignore only near-transparent feather pixels.
+
+    for (let start = 0; start < total; start++) {
+      if (seen[start] || alpha[start * 4 + 3] < threshold) continue;
+
+      let head = 0, tail = 0;
+      queue[tail++] = start;
+      seen[start] = 1;
+
+      while (head < tail) {
+        const p = queue[head++];
+        const x = p % width;
+        const y = (p / width) | 0;
+
+        // 8-connected neighborhood preserves diagonal fur and hair strands.
+        for (let dy = -1; dy <= 1; dy++) {
+          const ny = y + dy;
+          if (ny < 0 || ny >= height) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = x + dx;
+            if (nx < 0 || nx >= width) continue;
+            const n = ny * width + nx;
+            if (!seen[n] && alpha[n * 4 + 3] >= threshold) {
+              seen[n] = 1;
+              queue[tail++] = n;
+            }
+          }
+        }
+      }
+
+      components.push({ start, size: tail, pixels: queue.slice(0, tail) });
+      if (tail > largest) largest = tail;
+    }
+
+    // Keep small detached details only when they are substantial relative to
+    // the main subject; discard isolated specks and tiny background fragments.
+    const minIsland = Math.max(120, Math.floor(largest * 0.0015));
+    for (const component of components) {
+      if (component.size >= minIsland) continue;
+      for (let i = 0; i < component.size; i++) {
+        alpha[component.pixels[i] * 4 + 3] = 0;
+      }
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+    return maskCanvas;
+  }
+
   function createAlphaMask(outputTensor) {
     const values = outputTensor.data;
     let min = Infinity, max = -Infinity;
@@ -1064,7 +1128,7 @@ Describe your impact and achievements."></textarea></div><div class="field full"
       const outputName = session.outputNames[0];
       const prepared = makeInputTensor(image);
       const outputs = await session.run({ [inputName]: prepared.tensor });
-      const maskCanvas = createAlphaMask(outputs[outputName]);
+      const maskCanvas = removeSmallMaskIslands(createAlphaMask(outputs[outputName]));
       canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       ctx.clearRect(0, 0, canvas.width, canvas.height);
