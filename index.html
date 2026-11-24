@@ -1026,8 +1026,16 @@ Describe your impact and achievements."></textarea></div><div class="field full"
     maskCanvas.width = MODEL_INPUT_SIZE; maskCanvas.height = MODEL_INPUT_SIZE;
     const ctx = maskCanvas.getContext('2d');
     const imageData = ctx.createImageData(MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);
+    // ISNet returns a soft foreground probability map. Keep its per-image
+    // min/max normalization, then suppress weak background confidence and
+    // smoothly preserve the transition around fur, hair and fine edges.
+    const lowCut = 0.22;
+    const highCut = 0.68;
     for (let i = 0; i < values.length && i < MODEL_INPUT_SIZE * MODEL_INPUT_SIZE; i++) {
-      const a = Math.max(0, Math.min(255, Math.round(((Number(values[i]) - min) / range) * 255)));
+      const normalized = Math.max(0, Math.min(1, (Number(values[i]) - min) / range));
+      const t = Math.max(0, Math.min(1, (normalized - lowCut) / (highCut - lowCut)));
+      const refined = t * t * (3 - 2 * t); // smoothstep
+      const a = Math.round(refined * 255);
       const j = i * 4;
       imageData.data[j] = 255; imageData.data[j + 1] = 255;
       imageData.data[j + 2] = 255; imageData.data[j + 3] = a;
@@ -1051,7 +1059,7 @@ Describe your impact and achievements."></textarea></div><div class="field full"
       const image = await loadImage(sourceFile);
       if (image.naturalWidth * image.naturalHeight > 24000000) throw new Error('This image is very large. Please resize it to 24 megapixels or less.');
       const session = await getSession();
-      setStatus('AI is detecting the subject and removing the background…');
+      setStatus('AI is detecting the subject and refining the edges…');
       const inputName = session.inputNames[0];
       const outputName = session.outputNames[0];
       const prepared = makeInputTensor(image);
