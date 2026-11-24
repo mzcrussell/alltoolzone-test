@@ -945,16 +945,24 @@ Describe your impact and achievements."></textarea></div><div class="field full"
 })();
 </script>
 <script type="module">
-  import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1';
+  // Direct ONNX Runtime Web inference avoids Transformers.js' unsupported
+  // `custom` model architecture error for this ISNet export.
+  import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/+esm';
+
   const fileInput = document.getElementById('bgFile');
   const removeBtn = document.getElementById('bgRemoveBtn');
   const downloadBtn = document.getElementById('bgDownload');
   const statusEl = document.getElementById('bgStatus');
   const canvas = document.getElementById('bgCanvas');
   const previewWrap = document.getElementById('bgPreviewWrap');
-  let sourceFile = null, resultBlob = null, removerPromise = null, busy = false;
-  env.allowLocalModels = false;
-  env.useBrowserCache = true;
+  const MODEL_URL = 'https://huggingface.co/Ko033/isnet-general-use-onnx/resolve/main/onnx/model_quantized.onnx';
+  const MODEL_SIZE_LABEL = 'about 45 MB';
+  const MODEL_INPUT_SIZE = 1024;
+  let sourceFile = null, resultBlob = null, sessionPromise = null, busy = false;
+
+  ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
+  ort.env.wasm.numThreads = Math.min(4, Math.max(1, navigator.hardwareConcurrency || 1));
+
   function setStatus(message) { statusEl.textContent = message; }
   function loadImage(file) {
     return new Promise((resolve, reject) => {
@@ -964,21 +972,54 @@ Describe your impact and achievements."></textarea></div><div class="field full"
       image.src = url;
     });
   }
-  function getSegmenter() {
-    if (!removerPromise) {
-      removerPromise = (async () => {
-        setStatus('Loading general-purpose AI model… The first download is about 45 MB and may take a little while.');
-        try {
-          if (!navigator.gpu) throw new Error('WebGPU is not available');
-          return await pipeline('image-segmentation', 'Ko033/isnet-general-use-onnx', { device: 'webgpu', dtype: 'fp16' });
-        } catch (gpuError) {
-          console.warn('Using compatible CPU/WASM model.', gpuError);
-          setStatus('Loading the compatible CPU model…');
-          return await pipeline('image-segmentation', 'Ko033/isnet-general-use-onnx', { device: 'wasm', dtype: 'q8' });
-        }
-      })().catch(error => { removerPromise = null; throw error; });
+  function getSession() {
+    if (!sessionPromise) {
+      sessionPromise = (async () => {
+        setStatus(`Downloading the AI model (${MODEL_SIZE_LABEL}) for the first use…`);
+        return await ort.InferenceSession.create(MODEL_URL, {
+          executionProviders: ['wasm'],
+          graphOptimizationLevel: 'all'
+        });
+      })().catch(error => { sessionPromise = null; throw error; });
     }
-    return removerPromise;
+    return sessionPromise;
+  }
+  function makeInputTensor(image) {
+    const inputCanvas = document.createElement('canvas');
+    inputCanvas.width = MODEL_INPUT_SIZE; inputCanvas.height = MODEL_INPUT_SIZE;
+    const ctx = inputCanvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(image, 0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);
+    const rgba = ctx.getImageData(0, 0, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE).data;
+    const plane = MODEL_INPUT_SIZE * MODEL_INPUT_SIZE;
+    const data = new Float32Array(3 * plane);
+    for (let i = 0; i < plane; i++) {
+      data[i] = rgba[i * 4] / 255 - 0.5;
+      data[plane + i] = rgba[i * 4 + 1] / 255 - 0.5;
+      data[2 * plane + i] = rgba[i * 4 + 2] / 255 - 0.5;
+    }
+    return new ort.Tensor('float32', data, [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE]);
+  }
+  function createAlphaMask(outputTensor) {
+    const values = outputTensor.data;
+    let min = Infinity, max = -Infinity;
+    for (let i = 0; i < values.length; i++) {
+      const v = Number(values[i]);
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    const range = max - min || 1;
+    const maskCanvas = document.createElement('canvas');
+    maskCanvas.width = MODEL_INPUT_SIZE; maskCanvas.height = MODEL_INPUT_SIZE;
+    const ctx = maskCanvas.getContext('2d');
+    const imageData = ctx.createImageData(MODEL_INPUT_SIZE, MODEL_INPUT_SIZE);
+    for (let i = 0; i < values.length && i < MODEL_INPUT_SIZE * MODEL_INPUT_SIZE; i++) {
+      const a = Math.max(0, Math.min(255, Math.round(((Number(values[i]) - min) / range) * 255)));
+      const j = i * 4;
+      imageData.data[j] = 255; imageData.data[j + 1] = 255;
+      imageData.data[j + 2] = 255; imageData.data[j + 3] = a;
+    }
+    ctx.putImageData(imageData, 0, 0);
+    return maskCanvas;
   }
   fileInput.addEventListener('change', () => {
     sourceFile = fileInput.files?.[0] || null;
@@ -995,15 +1036,13 @@ Describe your impact and achievements."></textarea></div><div class="field full"
       setStatus('Preparing your image…');
       const image = await loadImage(sourceFile);
       if (image.naturalWidth * image.naturalHeight > 24000000) throw new Error('This image is very large. Please resize it to 24 megapixels or less.');
-      const segmenter = await getSegmenter();
+      const session = await getSession();
       setStatus('AI is detecting the subject and removing the background…');
-      const predictions = await segmenter(image);
-      const prediction = Array.isArray(predictions) ? predictions[0] : predictions;
-      const mask = prediction?.mask || prediction;
-      if (!mask || typeof mask.toCanvas !== 'function') throw new Error('The AI model did not return a usable subject mask. Please try another image.');
-      const maskCanvas = mask.toCanvas();
-      const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
-      const maskPixels = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+      const inputName = session.inputNames[0];
+      const outputName = session.outputNames[0];
+      const feeds = { [inputName]: makeInputTensor(image) };
+      const outputs = await session.run(feeds);
+      const maskCanvas = createAlphaMask(outputs[outputName]);
       canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -1014,18 +1053,16 @@ Describe your impact and achievements."></textarea></div><div class="field full"
       matteCtx.drawImage(maskCanvas, 0, 0, matte.width, matte.height);
       const alpha = matteCtx.getImageData(0, 0, matte.width, matte.height).data;
       const pixels = original.data;
-      for (let i = 0; i < pixels.length; i += 4) {
-        const a = alpha[i];
-        pixels[i + 3] = Math.round(pixels[i + 3] * a / 255);
-      }
+      for (let i = 0; i < pixels.length; i += 4) pixels[i + 3] = Math.round(pixels[i + 3] * alpha[i] / 255);
       ctx.putImageData(original, 0, 0);
       resultBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
       if (!resultBlob) throw new Error('PNG export failed. Please try another image.');
       previewWrap.style.display = 'block'; downloadBtn.disabled = false;
-      setStatus(`Done! Background removed. ${canvas.width} × ${canvas.height} PNG is ready. Your photo stayed on this device.`);
+      setStatus(`Done! Background removed. ${canvas.width} × ${canvas.height} transparent PNG is ready. Your photo stayed on this device.`);
     } catch (error) {
-      console.error(error);
-      setStatus(error?.message || 'Background removal failed. Please refresh and try again.');
+      console.error('Background remover error:', error);
+      const detail = error?.message || String(error);
+      setStatus(`Could not remove the background: ${detail}. Check your internet connection and try again.`);
     } finally {
       busy = false; removeBtn.disabled = !sourceFile;
     }
@@ -1033,7 +1070,7 @@ Describe your impact and achievements."></textarea></div><div class="field full"
   downloadBtn.addEventListener('click', () => {
     if (!resultBlob) return;
     const url = URL.createObjectURL(resultBlob), link = document.createElement('a');
-    link.href = url; link.download = (sourceFile?.name || 'image').replace(/\.[^.]+$/, '') + '-no-background.png';
+    link.href = url; link.download = 'alltoolzone-background-removed.png';
     document.body.appendChild(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1500);
   });
