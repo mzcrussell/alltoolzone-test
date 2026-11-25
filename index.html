@@ -183,7 +183,8 @@
     .inline-note { padding:12px 14px; background:#f5f7fb; border:1px solid var(--line); border-radius:12px; color:var(--muted); font-size:.86rem; }
     @media print { body * { visibility:hidden !important; } body[data-print-target="resume"] #resumePreview, body[data-print-target="resume"] #resumePreview *, body[data-print-target="invoice"] #invoicePreview, body[data-print-target="invoice"] #invoicePreview * { visibility:visible !important; } body[data-print-target="resume"] #resumePreview, body[data-print-target="invoice"] #invoicePreview { position:absolute; inset:0; width:100%; max-width:none; box-shadow:none; border:0; } }
   </style>
-</head>
+<style>
+#bgMagic[hidden]{display:none!important} #bgMagic{margin:16px 0;padding:12px;border:1px solid #64748b;border-radius:16px;background:#101827;color:#fff;text-align:center} #bgMagicStage{position:relative;overflow:hidden;display:inline-block;max-width:100%;border-radius:12px;line-height:0} #bgMagicImage{display:block;max-width:100%;max-height:320px;object-fit:contain} #bgMagicBeam{position:absolute;left:0;right:0;top:0;height:3px;background:#a5f3fc;box-shadow:0 0 22px 8px #22d3ee88;animation:bgMagicScan 2.4s ease-in-out infinite alternate} @keyframes bgMagicScan{to{top:99%}} #bgMagicTrack{height:5px;overflow:hidden;background:#334155;border-radius:8px;margin:12px 0} #bgMagicTrack:after{content:'';display:block;width:35%;height:100%;background:#67e8f9;animation:bgMagicProgress 1.5s ease-in-out infinite alternate} @keyframes bgMagicProgress{to{transform:translateX(185%)}} #bgMagic.done #bgMagicStage,#bgMagic.done #bgMagicBeam,#bgMagic.done #bgMagicTrack{display:none} #bgMagic.done{border-color:#34d399} @media(prefers-reduced-motion:reduce){#bgMagicBeam,#bgMagicTrack:after{animation:none}} </style></head>
 <body>
 <header class="site-header">
   <div class="wrap nav">
@@ -386,7 +387,7 @@
       <div class="field"><label for="bgFile">Choose a photo</label><input id="bgFile" type="file" accept="image/png,image/jpeg,image/webp,image/bmp"></div>
       <div class="actions"><button class="btn" id="bgRemoveBtn" disabled>Remove background with AI</button><button class="btn secondary" id="bgDownload" disabled>Download transparent PNG</button></div>
       <p class="notice" id="bgStatus" role="status" aria-live="polite">Choose an image to get started. The AI model downloads the first time you use this tool.</p>
-      <div id="bgPreviewWrap" class="result" style="display:none"><h3 style="margin:0 0 10px">Transparent preview</h3><canvas id="bgCanvas" style="display:block;width:100%;height:auto;max-height:650px;object-fit:contain;border-radius:10px;background-color:#fff;background-image:linear-gradient(45deg,#e9edf4 25%,transparent 25%),linear-gradient(-45deg,#e9edf4 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#e9edf4 75%),linear-gradient(-45deg,transparent 75%,#e9edf4 75%);background-size:20px 20px;background-position:0 0,0 10px,10px -10px,-10px 0"></canvas></div>
+      <div id="bgMagic" hidden><div id="bgMagicStage"><img id="bgMagicImage" alt="Selected image"><span id="bgMagicBeam" aria-hidden="true"></span></div><div id="bgMagicTrack" aria-hidden="true"></div><strong id="bgMagicLabel">✨ Your image magic is starting…</strong></div><div id="bgPreviewWrap" class="result" style="display:none"><h3 style="margin:0 0 10px">Transparent preview</h3><canvas id="bgCanvas" style="display:block;width:100%;height:auto;max-height:650px;object-fit:contain;border-radius:10px;background-color:#fff;background-image:linear-gradient(45deg,#e9edf4 25%,transparent 25%),linear-gradient(-45deg,#e9edf4 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#e9edf4 75%),linear-gradient(-45deg,transparent 75%,#e9edf4 75%);background-size:20px 20px;background-position:0 0,0 10px,10px -10px,-10px 0"></canvas></div>
       <p class="notice">Best results depend on the photo. Fine hair, transparent glass, crowded scenes and some product edges may need further refinement. Very large images may take longer on older phones.</p></section>
 
     <section class="panel" id="panel-pdfkit"><h2>PDF Toolkit</h2><p class="panel-intro">Merge PDF files, extract a page range, or rotate every page. Files are processed in your browser with PDF-Lib.</p><div class="field"><label for="pdfFiles">Select PDF file(s)</label><input id="pdfFiles" type="file" accept="application/pdf,.pdf" multiple></div><div class="form-grid" style="margin-top:14px"><div class="field"><label for="pdfAction">Action</label><select id="pdfAction"><option value="merge">Merge selected PDFs</option><option value="extract">Extract pages from first PDF</option><option value="rotate">Rotate all pages in first PDF</option></select></div><div class="field"><label for="pdfPages">Page range (for extract, e.g. 1-3,5)</label><input id="pdfPages" placeholder="1-3,5"></div><div class="field"><label for="pdfRotation">Rotation (for rotate)</label><select id="pdfRotation"><option value="90">90° clockwise</option><option value="180">180°</option><option value="270">270° clockwise</option></select></div></div><div class="actions"><button class="btn" id="runPdf">Process PDF</button></div><p class="notice" id="pdfStatus" aria-live="polite">Select one or more PDF files to begin. Password-protected PDFs may not work.</p><div class="inline-note">This version does not promise aggressive PDF compression; image-heavy PDF compression requires a dedicated encoder.</div></section>
@@ -956,6 +957,9 @@ Describe your impact and achievements."></textarea></div><div class="field full"
   const canvas = document.getElementById('bgCanvas');
   const previewWrap = document.getElementById('bgPreviewWrap');
 
+  const magic = document.getElementById('bgMagic'), magicImage = document.getElementById('bgMagicImage'), magicLabel = document.getElementById('bgMagicLabel');
+  let magicUrl = null, backend = 'wasm', modelBytes = null, runtime = ort;
+  function clearMagic(){ magic.hidden = true; magic.classList.remove('done'); magicImage.removeAttribute('src'); if(magicUrl) URL.revokeObjectURL(magicUrl); magicUrl = null; }
   const MODEL_URL = 'https://huggingface.co/clevr-tools/birefnet-lite-web/resolve/main/birefnet_lite_512_fp16w.onnx';
   const MODEL_SIZE_LABEL = 'about 101 MB';
   const MODEL_SIZE = 512;
@@ -966,19 +970,29 @@ Describe your impact and achievements."></textarea></div><div class="field full"
 
   function setStatus(message) { statusEl.textContent = message; }
 
-  function getSession() {
+  async function getSession(forceWasm = false) {
     if (!sessionPromise) {
       sessionPromise = (async () => {
-        setStatus(`Downloading browser-optimised AI model (${MODEL_SIZE_LABEL}) for first use…`);
-        const response = await fetch(MODEL_URL);
-        if (!response.ok) throw new Error(`AI model download failed (HTTP ${response.status}). Please retry.`);
-        const bytes = await response.arrayBuffer();
-        if (bytes.byteLength < 1000000) throw new Error('AI model download was incomplete. Please refresh and retry.');
-        setStatus('Loading AI model into your browser…');
-        return await ort.InferenceSession.create(bytes, {
-          executionProviders: ['wasm'],
-          graphOptimizationLevel: 'all'
-        });
+        if (!modelBytes) {
+          setStatus(`Downloading AI model (${MODEL_SIZE_LABEL}) for first use…`);
+          magicLabel.textContent = '✨ Getting the AI model ready…';
+          const response = await fetch(MODEL_URL);
+          if (!response.ok) throw new Error(`AI model download failed (HTTP ${response.status}).`);
+          modelBytes = await response.arrayBuffer();
+          if (modelBytes.byteLength < 1000000) { modelBytes = null; throw new Error('Incomplete model download. Please retry.'); }
+        }
+        if (!forceWasm && navigator.gpu) {
+          try {
+            setStatus('Starting GPU acceleration…');
+            const gpu = await import('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.webgpu.min.mjs');
+            gpu.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
+            const session = await gpu.InferenceSession.create(modelBytes, {executionProviders:['webgpu'], graphOptimizationLevel:'all'});
+            runtime = gpu; backend = 'webgpu'; return session;
+          } catch(e) { console.warn('GPU unavailable; using CPU', e); }
+        }
+        runtime = ort; backend = 'wasm';
+        setStatus('Loading AI model in CPU compatibility mode…');
+        return await ort.InferenceSession.create(modelBytes, {executionProviders:['wasm'], graphOptimizationLevel:'all'});
       })().catch(error => { sessionPromise = null; throw error; });
     }
     return sessionPromise;
@@ -1007,7 +1021,7 @@ Describe your impact and achievements."></textarea></div><div class="field full"
       data[plane + i] = (rgba[i * 4 + 1] / 255 - mean[1]) / std[1];
       data[2 * plane + i] = (rgba[i * 4 + 2] / 255 - mean[2]) / std[2];
     }
-    return new ort.Tensor('float32', data, [1, 3, MODEL_SIZE, MODEL_SIZE]);
+    return new runtime.Tensor('float32', data, [1, 3, MODEL_SIZE, MODEL_SIZE]);
   }
 
   function makeMaskCanvas(outputTensor) {
@@ -1028,6 +1042,7 @@ Describe your impact and achievements."></textarea></div><div class="field full"
   }
 
   fileInput.addEventListener('change', () => {
+    clearMagic();
     sourceFile = fileInput.files?.[0] || null;
     resultBlob = null; downloadBtn.disabled = true; previewWrap.style.display = 'none';
     removeBtn.disabled = !sourceFile;
@@ -1036,7 +1051,7 @@ Describe your impact and achievements."></textarea></div><div class="field full"
 
   removeBtn.addEventListener('click', async () => {
     if (!sourceFile || busy) return;
-    busy = true; removeBtn.disabled = true; downloadBtn.disabled = true;
+    busy = true; removeBtn.disabled = true; downloadBtn.disabled = true; fileInput.disabled = true; previewWrap.style.display = 'none'; clearMagic();
     try {
       if (!sourceFile.type.startsWith('image/')) throw new Error('Please choose a valid image file.');
       if (sourceFile.size > 20 * 1024 * 1024) throw new Error('Please choose an image smaller than 20 MB.');
@@ -1044,9 +1059,24 @@ Describe your impact and achievements."></textarea></div><div class="field full"
       const image = await loadImage(sourceFile);
       if (image.naturalWidth * image.naturalHeight > 24000000) throw new Error('Please resize this image to 24 megapixels or less.');
 
-      const session = await getSession();
-      setStatus('AI is detecting the subject. Slower computers may take longer…');
-      const outputs = await session.run({ [session.inputNames[0]]: makeInputTensor(image) });
+      magicUrl = URL.createObjectURL(sourceFile); magicImage.src = magicUrl; magic.hidden = false;
+      magicLabel.textContent = '✨ Your image magic is starting…';
+      let session = await getSession();
+      magicLabel.textContent = '✨ Finding the subject and removing the background…';
+      setStatus(`AI is processing your image (${backend === 'webgpu' ? 'GPU acceleration' : 'CPU compatibility mode'})…`);
+      let outputs;
+      try { outputs = await session.run({ [session.inputNames[0]]: makeInputTensor(image) }); }
+      catch(error) {
+        if (backend !== 'webgpu') throw error;
+        console.warn('GPU processing failed; retrying CPU', error);
+        try { await session.release(); } catch (_) {}
+        sessionPromise = null; session = await getSession(true);
+        setStatus('Retrying with CPU compatibility mode…');
+        outputs = await session.run({ [session.inputNames[0]]: makeInputTensor(image) });
+      }
+      magicLabel.textContent = '✨ Almost done! Preparing your transparent PNG…';
+      setStatus('Creating transparent PNG…');
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       const maskCanvas = makeMaskCanvas(outputs[session.outputNames[0]]);
 
       canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
@@ -1065,13 +1095,15 @@ Describe your impact and achievements."></textarea></div><div class="field full"
       ctx.putImageData(original, 0, 0);
       resultBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
       if (!resultBlob) throw new Error('PNG export failed. Please try another image.');
-      previewWrap.style.display = 'block'; downloadBtn.disabled = false;
+      clearMagic(); previewWrap.style.display = 'block'; downloadBtn.disabled = false;
+      magic.hidden = false; magic.classList.add('done'); magicLabel.textContent = '✓ Magic complete! Your image is ready.';
       setStatus(`Done! ${canvas.width} × ${canvas.height} transparent PNG is ready. Your photo stayed on this device.`);
     } catch (error) {
+      clearMagic();
       console.error('Browser-optimised BiRefNet error:', error);
       setStatus(`Could not remove the background: ${error?.message || String(error)}. If this repeats, share the browser Console error.`);
     } finally {
-      busy = false; removeBtn.disabled = !sourceFile;
+      busy = false; fileInput.disabled = false; removeBtn.disabled = !sourceFile;
     }
   });
 
